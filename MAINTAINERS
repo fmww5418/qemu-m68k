@@ -907,10 +907,12 @@ M: Laurent Vivier <laurent@vivier.eu>
 S: Maintained
 F: hw/block/swim.c
 F: hw/m68k/bootinfo.h
+F: hw/audio/asc.c
 F: hw/display/macfb.c
 F: hw/m68k/q800.c
 F: hw/misc/mac_via.c
 F: hw/nubus/*
+F: include/hw/audio/asc.h
 F: include/hw/block/swim.h
 F: include/hw/display/macfb.h
 F: include/hw/misc/mac_via.h

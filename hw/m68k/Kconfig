@@ -12,6 +12,7 @@ config Q800
     bool
     select FRAMEBUFFER
     select ADB
+    select ASC
     select MAC_VIA
     select ESCC
     select ESP

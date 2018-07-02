@@ -140,8 +140,9 @@ static uint32_t get_cmd(ESPState *s, uint8_t *buf, uint8_t buflen)
         } else {
             memcpy(s->pdma_buf, buf, dmalen);
             s->pdma_len = dmalen;
-            s->pdma_start = s->pdma_buf;
-            s->pdma_cur = s->pdma_buf;
+            s->pdma_buf_idx = PDMA_BUF;
+            s->pdma_start_idx = 0;
+            s->pdma_cur_idx = 0;
             esp_raise_drq(s);
             return 0;
         }
@@ -197,13 +198,44 @@ static void do_cmd(ESPState *s, uint8_t *buf)
     do_busid_cmd(s, &buf[1], busid);
 }
 
+static uint8_t *pdma_get_cur_ptr(ESPState *s)
+{
+    switch (s->pdma_buf_idx) {
+    case TI_BUF:
+        return s->ti_buf + s->pdma_cur_idx;
+    case CMD_BUF:
+        return s->cmdbuf + s->pdma_cur_idx;
+    case ASYNC_BUF:
+        return s->async_buf + s->pdma_cur_idx;
+    case PDMA_BUF:
+        return s->pdma_buf + s->pdma_cur_idx;
+    }
+    g_assert_not_reached();
+}
+
+static uint8_t *pdma_get_start_ptr(ESPState *s)
+{
+    switch (s->pdma_buf_idx) {
+    case TI_BUF:
+        return s->ti_buf + s->pdma_start_idx;
+    case CMD_BUF:
+        return s->cmdbuf + s->pdma_start_idx;
+    case ASYNC_BUF:
+        return s->async_buf + s->pdma_start_idx;
+    case PDMA_BUF:
+        return s->pdma_buf + s->pdma_start_idx;
+    }
+    g_assert_not_reached();
+}
+
 static void satn_pdma_cb(ESPState *s)
 {
     if (get_cmd_cb(s) < 0) {
         return;
     }
-    if (s->pdma_cur != s->pdma_start)
-        do_cmd(s, s->pdma_start);
+    if (s->pdma_cur_idx != s->pdma_start_idx) {
+        do_cmd(s, pdma_get_start_ptr(s));
+    }
 }
 
 static void handle_satn(ESPState *s)
@@ -226,8 +258,9 @@ static void s_without_satn_pdma_cb(ESPState *s)
     if (get_cmd_cb(s) < 0) {
         return;
     }
-    if (s->pdma_cur != s->pdma_start)
-        do_busid_cmd(s, s->pdma_start, 0);
+    if (s->pdma_cur_idx != s->pdma_start_idx) {
+        do_busid_cmd(s, pdma_get_start_ptr(s), 0);
+    }
 }
 
 static void handle_s_without_atn(ESPState *s)
@@ -251,7 +284,7 @@ static void satn_stop_pdma_cb(ESPState *s)
     if (get_cmd_cb(s) < 0) {
         return;
     }
-    s->cmdlen = s->pdma_cur - s->pdma_start;
+    s->cmdlen = s->pdma_cur_idx - s->pdma_start_idx;
     if (s->cmdlen) {
         trace_esp_handle_satn_stop(s->cmdlen);
         s->do_cmd = 1;
@@ -301,8 +334,9 @@ static void write_response(ESPState *s)
             s->rregs[ESP_RSEQ] = SEQ_CD;
         } else {
             s->pdma_len = 2;
-            s->pdma_start = s->ti_buf;
-            s->pdma_cur = s->ti_buf;
+            s->pdma_buf_idx = TI_BUF;
+            s->pdma_start_idx = 0;
+            s->pdma_cur_idx = 0;
             s->pdma_cb = write_response_pdma_cb;
             esp_raise_drq(s);
             return;
@@ -331,7 +365,7 @@ static void esp_dma_done(ESPState *s)
 static void do_dma_pdma_cb(ESPState *s)
 {
     int to_device = (s->ti_size < 0);
-    int len = s->pdma_cur - s->pdma_start;
+    int len = s->pdma_cur_idx - s->pdma_start_idx;
     if (s->do_cmd) {
         s->ti_size = 0;
         s->cmdlen = 0;
@@ -375,8 +409,9 @@ static void esp_do_dma(ESPState *s)
             s->dma_memory_read(s->dma_opaque, &s->cmdbuf[s->cmdlen], len);
         } else {
             s->pdma_len = len;
-            s->pdma_start = &s->cmdbuf[s->cmdlen];
-            s->pdma_cur = &s->cmdbuf[s->cmdlen];
+            s->pdma_buf_idx = CMD_BUF;
+            s->pdma_start_idx = s->cmdlen;
+            s->pdma_cur_idx = s->cmdlen;
             s->pdma_cb = do_dma_pdma_cb;
             esp_raise_drq(s);
             return;
@@ -404,8 +439,9 @@ static void esp_do_dma(ESPState *s)
             s->dma_memory_read(s->dma_opaque, s->async_buf, len);
         } else {
             s->pdma_len = len;
-            s->pdma_start = s->async_buf;
-            s->pdma_cur = s->async_buf;
+            s->pdma_buf_idx = ASYNC_BUF;
+            s->pdma_start_idx = 0;
+            s->pdma_cur_idx = 0;
             s->pdma_cb = do_dma_pdma_cb;
             esp_raise_drq(s);
             return;
@@ -415,8 +451,9 @@ static void esp_do_dma(ESPState *s)
             s->dma_memory_write(s->dma_opaque, s->async_buf, len);
         } else {
             s->pdma_len = len;
-            s->pdma_start = s->async_buf;
-            s->pdma_cur = s->async_buf;
+            s->pdma_buf_idx = ASYNC_BUF;
+            s->pdma_start_idx = 0;
+            s->pdma_cur_idx = 0;
             s->pdma_cb = do_dma_pdma_cb;
             esp_raise_drq(s);
             return;
@@ -802,6 +839,7 @@ static void sysbus_esp_pdma_write(void *opaque, hwaddr addr,
     SysBusESPState *sysbus = opaque;
     ESPState *s = &sysbus->esp;
     uint32_t dmalen;
+    uint8_t *pdma_cur;
 
     dmalen = s->rregs[ESP_TCLO];
     dmalen |= s->rregs[ESP_TCMID] << 8;
@@ -809,15 +847,18 @@ static void sysbus_esp_pdma_write(void *opaque, hwaddr addr,
     if (dmalen == 0 || s->pdma_len == 0) {
         return;
     }
+    pdma_cur = pdma_get_cur_ptr(s);
     switch (size) {
     case 1:
-        *s->pdma_cur++ = val;
+        pdma_cur[0] = val;
+        s->pdma_cur_idx++;
         s->pdma_len--;
         dmalen--;
         break;
     case 2:
-        *s->pdma_cur++ = val >> 8;
-        *s->pdma_cur++ = val;
+        pdma_cur[0] = val >> 8;
+        pdma_cur[1] = val;
+        s->pdma_cur_idx += 2;
         s->pdma_len -= 2;
         dmalen -= 2;
         break;
@@ -838,18 +879,21 @@ static uint64_t sysbus_esp_pdma_read(void *opaque, hwaddr addr,
     SysBusESPState *sysbus = opaque;
     ESPState *s = &sysbus->esp;
     uint64_t val = 0;
+    uint8_t *pdma_cur;
 
     if (s->pdma_len == 0) {
         return 0;
     }
+    pdma_cur = pdma_get_cur_ptr(s);
     switch (size) {
     case 1:
-        val = *s->pdma_cur++;
+        val = pdma_cur[0];
+        s->pdma_cur_idx++;
         s->pdma_len--;
         break;
     case 2:
-        val = *s->pdma_cur++;
-        val = (val << 8) | *s->pdma_cur++;
+        val = (pdma_cur[0] << 8) | pdma_cur[1];
+        s->pdma_cur_idx += 2;
         s->pdma_len -= 2;
         break;
     }
